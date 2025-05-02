@@ -1,0 +1,52 @@
+/* Style the video: 100% width and height to cover the entire window */
+
+#praying-mantis {
+  left: 100px;
+  top: 190px;
+  opacity: 1;
+}
+
+#white-flowers {
+  left: 860px;
+  top: 200px;
+}
+
+#crab {
+  left: 1820px;
+  top: 360px;
+}
+
+#frog {
+  left: 2800px;
+  top: 360px;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 100vh;
+  margin: 0;
+  /*   overflow: hidden; */
+  overflow-y: hidden;
+}
+
+.box {
+  opacity: 0;
+}
+
+.text-box {
+  position: absolute;
+  padding: 4px;
+  display: flex;
+  min-height: 10px;
+  min-width: 10px;
+}
+
+#bg-video {
+  position: absolute;
+  left: 0;
+  top: -105%;
+  height: 300vh;
+  z-index: -100;
+}
