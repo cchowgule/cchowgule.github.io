@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# cloudcheck - verify that two folders (e.g. Dropbox and Google Drive) hold the same files.
+#
+# Engine selection (auto):
+#   both paths local (e.g. ~/Dropbox vs a mounted Drive folder) -> rsync dry-run
+#   any path is an rclone remote (remote:path)                  -> rclone check
+#
+# Exit codes: 0 = match, 1 = differences found, 2 = usage/dependency/runtime error.
+
+# shellcheck disable=SC2317  # run_rsync/run_rclone are called indirectly via "run_$engine"
+set -euo pipefail
+
+PROG=${0##*/}
+VERSION=1.0.0
+
+engine=auto
+mode="hash"      # hash | size | download
+one_way=0
+quiet=0
+verbose=0
+report=""
+excludes=()
+
+usage() {
+  cat <<EOF
+Usage: $PROG [options] SOURCE DEST
+
+Check whether files in SOURCE match those in DEST.
+Paths are either local directories or rclone remotes (e.g. dropbox:Photos, gdrive:Backup/Photos).
+
+Options:
+  -e, --engine ENGINE   auto | rsync | rclone (default: auto)
+  -s, --size-only       Compare sizes only (fast, weakest)
+  -d, --download        rclone: download and compare bytes (needed for Dropbox vs Drive,
+                        which share no common hash type)
+  -1, --one-way         Only report files in SOURCE that are missing/different in DEST
+  -x, --exclude PATTERN Exclude files matching PATTERN (repeatable)
+  -r, --report FILE     Also write the full per-file result list to FILE
+  -q, --quiet           Print only the summary
+  -v, --verbose         Also list matching files and show the underlying command
+  -h, --help            Show this help
+  -V, --version         Show version
+
+Output markers:
+  =  identical            *  differs
+  +  only in SOURCE       -  only in DEST
+  !  error reading file
+
+Examples:
+  $PROG dropbox:Photos gdrive:Photos --download
+  $PROG ~/Dropbox/Projects ~/GoogleDrive/Projects
+  $PROG -1 -x '*.tmp' -r diff.txt dropbox:Docs gdrive:Docs
+EOF
+}
+
+die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
+log() { (( quiet )) || printf '%s\n' "$*" >&2; }
+
+positional=()
+while (( $# )); do
+  case $1 in
+    -e|--engine)    [[ $# -ge 2 ]] || die "$1 needs a value"; engine=$2; shift ;;
+    -s|--size-only) mode=size ;;
+    -d|--download)  mode=download ;;
+    -1|--one-way)   one_way=1 ;;
+    -x|--exclude)   [[ $# -ge 2 ]] || die "$1 needs a value"; excludes+=("$2"); shift ;;
+    -r|--report)    [[ $# -ge 2 ]] || die "$1 needs a value"; report=$2; shift ;;
+    -q|--quiet)     quiet=1 ;;
+    -v|--verbose)   verbose=1 ;;
+    -h|--help)      usage; exit 0 ;;
+    -V|--version)   echo "$PROG $VERSION"; exit 0 ;;
+    --)             shift; positional+=("$@"); break ;;
+    -?*)            die "unknown option: $1 (see --help)" ;;
+    *)              positional+=("$1") ;;
+  esac
+  shift
+done
+
+(( ${#positional[@]} == 2 )) || { usage >&2; exit 2; }
+src=${positional[0]}
+dst=${positional[1]}
+
+# rclone remote syntax is "name:path" with no '/' before the first ':'.
+is_remote() {
+  local p=$1
+  [[ $p == /* || $p == ./* || $p == ../* || $p == "~"* ]] && return 1
+  [[ $p =~ ^[^/]*: ]]
+}
+
+if [[ $engine == auto ]]; then
+  if is_remote "$src" || is_remote "$dst"; then engine=rclone; else engine=rsync; fi
+fi
+
+case $engine in
+  rsync)
+    is_remote "$src" || is_remote "$dst" && die "rsync cannot read rclone remotes; use --engine rclone"
+    [[ $mode == download ]] && die "--download applies to rclone only; rsync always reads local bytes"
+    command -v rsync >/dev/null || die "rsync not found (sudo apt install rsync)"
+    ;;
+  rclone)
+    command -v rclone >/dev/null || die "rclone not found (sudo apt install rclone, then: rclone config)"
+    ;;
+  *) die "invalid engine: $engine" ;;
+esac
+
+for p in "$src" "$dst"; do
+  if ! is_remote "$p"; then
+    [[ -d $p ]] || die "not a directory: $p"
+  fi
+done
+
+results=$(mktemp)
+errlog=$(mktemp)
+trap 'rm -f "$results" "$errlog"' EXIT
+
+# Each engine writes lines of "<marker> <path>" into $results.
+run_rsync() {
+  local args=(-rn --itemize-changes --out-format='%i %n')
+  case $mode in
+    hash) args+=(--checksum) ;;
+    size) args+=(--size-only) ;;
+  esac
+  (( one_way )) || args+=(--delete)
+  local x; for x in "${excludes[@]}"; do args+=(--exclude="$x"); done
+
+  (( verbose )) && log "+ rsync ${args[*]} ${src%/}/ ${dst%/}/"
+
+  local out rc=0
+  out=$(rsync "${args[@]}" "${src%/}/" "${dst%/}/" 2>&1) || rc=$?
+  if (( rc != 0 && rc != 23 && rc != 24 )); then
+    printf '%s\n' "$out" >&2
+    die "rsync failed (exit $rc)"
+  fi
+
+  # Itemize codes: ">f+++++++++" new file, ">f..." changed file, "*deleting" extra in dest.
+  local line code name
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    if [[ $line == '*deleting '* ]]; then
+      name=${line#\*deleting }; name=${name#"${name%%[![:space:]]*}"}
+      [[ $name == */ ]] || printf -- '- %s\n' "$name"
+      continue
+    fi
+    code=${line%% *}; name=${line#* }
+    case $code in
+      '>f+++++++++') printf '+ %s\n' "$name" ;;
+      '>f'*)         printf '* %s\n' "$name" ;;
+      rsync:*|'rsync error'*) printf '! %s\n' "$line" ;;
+    esac
+  done <<<"$out" >"$results"
+
+  # rsync does not list identical files; derive them for --verbose / --report.
+  if (( verbose )) || [[ -n $report ]]; then
+    local fargs=(); for x in "${excludes[@]}"; do fargs+=(--exclude="$x"); done
+    rsync -rn --out-format='%n' "${fargs[@]}" "${src%/}/" /nonexistent-cloudcheck/ 2>/dev/null \
+      | grep -v '/$' | sort >"$results.all" || true
+    cut -c3- "$results" | sort >"$results.diff"
+    comm -23 "$results.all" "$results.diff" | sed 's/^/= /' >>"$results"
+    rm -f "$results.all" "$results.diff"
+  fi
+}
+
+common_hashes() {
+  # Prints the shared hash types, empty if none, or "unknown" if they can't be determined.
+  command -v jq >/dev/null || { echo unknown; return; }
+  local a b
+  a=$(rclone backend features "$src" 2>/dev/null | jq -c '.Hashes // []') || { echo unknown; return; }
+  b=$(rclone backend features "$dst" 2>/dev/null | jq -c '.Hashes // []') || { echo unknown; return; }
+  jq -nr --argjson a "$a" --argjson b "$b" '($a - ($a - $b)) | join(",")'
+}
+
+run_rclone() {
+  local args=(check "$src" "$dst" --combined "$results")
+  case $mode in
+    size)     args+=(--size-only) ;;
+    download) args+=(--download) ;;
+    hash)
+      local h; h=$(common_hashes)
+      if [[ -z $h ]]; then
+        log "warning: $src and $dst share no hash type; rclone will compare sizes only."
+        log "         Re-run with --download for a byte-level check (downloads both sides)."
+      elif [[ $h != unknown ]] && (( verbose )); then
+        log "common hashes: $h"
+      fi
+      ;;
+  esac
+  (( one_way )) && args+=(--one-way)
+  local x; for x in "${excludes[@]}"; do args+=(--exclude "$x"); done
+
+  (( verbose )) && log "+ rclone ${args[*]}"
+
+  # rclone logs every difference to stderr; keep it unless verbose or on failure.
+  local rc=0
+  if (( verbose )); then
+    rclone "${args[@]}" || rc=$?
+  else
+    rclone "${args[@]}" 2>"$errlog" || rc=$?
+  fi
+  # rclone check: 0 = match, 1 = differences; anything else is an operational error.
+  if (( rc > 1 )) || { (( rc == 1 )) && [[ ! -s $results ]]; }; then
+    cat "$errlog" >&2
+    die "rclone failed (exit $rc); check remote names with: rclone listremotes"
+  fi
+}
+
+log "Comparing ($engine, $mode): $src  ->  $dst"
+"run_$engine"
+
+sort -k2 -o "$results" "$results"
+(( one_way )) && sed -i '/^- /d' "$results"
+
+count() { grep -c "^$1 " "$results" || true; }
+n_same=$(count '=')
+n_diff=$(count '\*')
+n_src=$(count '+')
+n_dst=$(count '-')
+n_err=$(count '!')
+
+if (( ! quiet )); then
+  if (( verbose )); then cat "$results"; else grep -v '^= ' "$results" || true; fi
+fi
+
+[[ -n $report ]] && cp "$results" "$report"
+
+summary="differ: $n_diff  only-in-source: $n_src  errors: $n_err"
+(( one_way )) || summary="differ: $n_diff  only-in-source: $n_src  only-in-dest: $n_dst  errors: $n_err"
+[[ $engine == rclone || $verbose == 1 || -n $report ]] && summary="identical: $n_same  $summary"
+echo "$summary"
+
+if (( n_diff + n_src + n_dst + n_err > 0 )); then
+  echo "RESULT: MISMATCH"
+  exit 1
+fi
+echo "RESULT: MATCH"
+exit 0
