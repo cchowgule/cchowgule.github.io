@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
 # cloudcheck - verify that two folders (e.g. Dropbox and Google Drive) hold the same files.
 #
-# By default only file names (relative paths) are compared; file contents are not read.
-#
-# Engine selection (auto):
-#   both paths local (e.g. ~/Dropbox vs a mounted Drive folder) -> rsync
-#   any path is an rclone remote (remote:path)                  -> rclone
+# Uses rclone to list both sides. By default only file names (relative paths) are
+# compared; file contents are not read.
 #
 # Runs on Linux and macOS. Written for bash >= 3.2 (macOS /bin/bash) and
 # POSIX/BSD userland tools: no associative arrays, no `sed -i`, no GNU-only flags.
 #
 # Exit codes: 0 = match, 1 = differences found, 2 = usage/dependency/runtime error.
 
-# shellcheck disable=SC2317  # run_* functions are called indirectly via "run_$engine"
 set -euo pipefail
 
 PROG=${0##*/}
-VERSION=1.2.0
+VERSION=2.0.0
 MIN_RCLONE_MAJOR=1
 MIN_RCLONE_MINOR=52   # first release with `rclone check --combined`
 
-engine=auto
 mode="names"     # names | size | checksum | download
 one_way=0
 ignore_case=0
@@ -39,8 +34,8 @@ Usage: $PROG [options] SOURCE DEST
        $PROG --preflight [SOURCE DEST]
 
 Check that SOURCE and DEST contain the same file names, and list any file that
-exists on only one side. Paths are local directories or rclone remotes
-(e.g. dropbox:Photos, gdrive:Backup/Photos).
+exists on only one side. Paths are rclone remotes (e.g. dropbox:Photos,
+gdrive:Backup/Photos); local directories also work.
 
 By default only names are compared (fast: listings only, no file contents read).
 
@@ -49,7 +44,6 @@ Options:
   -1, --one-way         Only report files in SOURCE that are missing from DEST
   -x, --exclude PATTERN Exclude files matching PATTERN (repeatable)
   -r, --report FILE     Also write the full per-file result list to FILE
-  -e, --engine ENGINE   auto | rsync | rclone (default: auto)
   -p, --preflight       Check all dependencies (and paths, if given), then exit
   -q, --quiet           Print only the summary
   -v, --verbose         Also list matching files and show the underlying commands
@@ -58,9 +52,9 @@ Options:
 
 Optional content checks (off by default; these also report files that differ):
   -s, --size-only       Also compare file sizes
-  -c, --checksum        Also compare hashes (rsync reads local bytes; rclone uses
-                        a hash both remotes support, else falls back to size)
-  -d, --download        rclone: download both sides and compare bytes
+  -c, --checksum        Also compare hashes (uses a hash type both sides support,
+                        else falls back to size; Dropbox and Drive share none)
+  -d, --download        Download both sides and compare bytes
 
 Result markers (used in --report files):
   =  same on both sides   *  content differs (content checks only)
@@ -71,7 +65,7 @@ Examples:
   $PROG --preflight
   $PROG dropbox:Photos gdrive:Photos
   $PROG -i -x '.DS_Store' dropbox:Docs gdrive:Docs
-  $PROG ~/Dropbox/Projects ~/GoogleDrive/Projects
+  $PROG -1 dropbox:Docs gdrive:Docs
 EOF
 }
 
@@ -80,7 +74,6 @@ log() { (( quiet )) || printf '%s\n' "$*" >&2; }
 
 while (( $# )); do
   case $1 in
-    -e|--engine)    [[ $# -ge 2 ]] || die "$1 needs a value"; engine=$2; shift ;;
     -s|--size-only) mode=size ;;
     -c|--checksum)  mode=checksum ;;
     -d|--download)  mode=download ;;
@@ -211,41 +204,6 @@ check_local_dir() {
   if [[ -d $p ]]; then pf_ok "directory exists: $p"; else pf_err "not a directory: $p"; fi
 }
 
-# Functional probe: the rsync shipped with macOS (openrsync, or 2.6.9 on older
-# releases) may lack options this tool relies on, so test them rather than
-# trusting the version string. $1 = names | content
-check_rsync() {
-  local need=${1:-content}
-  if ! command -v rsync >/dev/null 2>&1; then
-    pf_err "rsync not found -> $(install_hint rsync)"
-    return
-  fi
-  local v; v=$(rsync --version 2>/dev/null | sed -n 1p) || v=""
-  [[ -n $v ]] || v="rsync (unknown version)"
-  local tdir out ok=0 opts
-  tdir=$(mktemp -d "${TMPDIR:-/tmp}/cloudcheck-probe.XXXXXX") || { pf_warn "could not create temp dir to probe rsync"; return; }
-  mkdir "$tdir/a" "$tdir/b" || { rm -rf "$tdir"; pf_warn "could not create temp dir to probe rsync"; return; }
-  echo x >"$tdir/a/new"; echo y >"$tdir/b/old"; echo z >"$tdir/a/skip.ignore"
-  if [[ $need == names ]]; then
-    opts="--out-format --exclude"
-    out=$(rsync -rn --out-format='%n' --exclude='*.ignore' "$tdir/a/" "$tdir/b/" 2>&1) || true
-    printf '%s\n' "$out" | grep -qx 'new' && ! printf '%s\n' "$out" | grep -q 'skip' && ok=1
-  else
-    opts="--checksum --delete --itemize-changes --out-format --exclude"
-    out=$(rsync -rn --checksum --delete --itemize-changes --out-format='%i %n' \
-          --exclude='*.ignore' "$tdir/a/" "$tdir/b/" 2>&1) || true
-    printf '%s\n' "$out" | grep -q '^>f+.* new$' && printf '%s\n' "$out" | grep -q 'deleting.*old' && ok=1
-  fi
-  rm -rf "$tdir"
-  if (( ok )); then
-    pf_ok "$v"
-  else
-    local hint; hint=$(install_hint rsync)
-    [[ $os == Darwin ]] && hint="$hint  (the macOS system rsync lacks required options; ensure Homebrew's bin dir precedes /usr/bin in PATH)"
-    pf_err "$v does not support the required options ($opts) -> $hint"
-  fi
-}
-
 check_jq() {
   if command -v jq >/dev/null 2>&1; then
     pf_ok "jq $(jq --version 2>/dev/null)"
@@ -254,17 +212,14 @@ check_jq() {
   fi
 }
 
-# $1 = which engines to check: all | rsync | rclone
+# $1 = all (report every optional check too) | run (only what this run needs)
 preflight() {
   local which=$1
   (( pf_report )) && printf 'Preflight (%s):\n' "$os" >&2
   check_bash
   check_coreutils
-  case $which in
-    all)    check_rclone; check_rsync content; check_jq ;;
-    rclone) check_rclone; [[ $mode == checksum ]] && check_jq ;;
-    rsync)  if [[ $mode == names ]]; then check_rsync names; else check_rsync content; fi ;;
-  esac
+  check_rclone
+  if [[ $which == all || $mode == checksum ]]; then check_jq; fi
   check_remote "$src"; check_remote "$dst"
   check_local_dir "$src"; check_local_dir "$dst"
   if (( pf_fail )); then
@@ -281,23 +236,8 @@ if (( preflight_only )); then
   exit 0
 fi
 
-if [[ $engine == auto ]]; then
-  if is_remote "$src" || is_remote "$dst"; then engine=rclone; else engine=rsync; fi
-fi
-
-case $engine in
-  rsync)
-    if is_remote "$src" || is_remote "$dst"; then
-      die "rsync cannot read rclone remotes; use --engine rclone"
-    fi
-    [[ $mode == download ]] && die "--download applies to rclone only; rsync always reads local bytes"
-    ;;
-  rclone) ;;
-  *) die "invalid engine: $engine" ;;
-esac
-
 pf_report=$verbose
-preflight "$engine"
+preflight run
 
 tmpbase=${TMPDIR:-/tmp}
 work=$(mktemp -d "$tmpbase/cloudcheck.XXXXXX")
@@ -314,20 +254,11 @@ errlog=$work/errors
 # Directories are not listed; a folder that is empty on one side is not a difference.
 list_files() {
   local p=$1 x rc=0
-  if [[ $engine == rclone ]]; then
-    local args=(lsf -R --files-only)
-    for x in ${excludes[@]+"${excludes[@]}"}; do args+=(--exclude "$x"); done
-    (( verbose )) && log "+ rclone ${args[*]} $p"
-    rclone "${args[@]}" "$p" 2>"$errlog" >"$work/list.raw" || rc=$?
-  else
-    # Dry-run into an empty directory: rsync prints every file it would transfer.
-    local args=(-rn --out-format='%n')
-    for x in ${excludes[@]+"${excludes[@]}"}; do args+=(--exclude="$x"); done
-    mkdir -p "$work/empty"
-    (( verbose )) && log "+ rsync ${args[*]} ${p%/}/ <empty dir>/"
-    rsync "${args[@]}" "${p%/}/" "$work/empty/" 2>"$errlog" >"$work/list.raw" || rc=$?
-    (( rc == 23 || rc == 24 )) && rc=0   # partial transfer / vanished files: listing still usable
-  fi
+  # ${arr[@]+...} guards against "unbound variable" on empty arrays in bash < 4.4.
+  local args=(lsf -R --files-only)
+  for x in ${excludes[@]+"${excludes[@]}"}; do args+=(--exclude "$x"); done
+  (( verbose )) && log "+ rclone ${args[*]} $p"
+  rclone "${args[@]}" "$p" 2>"$errlog" >"$work/list.raw" || rc=$?
   if (( rc != 0 )); then
     cat "$errlog" >&2
     die "could not list $p (exit $rc)"
@@ -356,51 +287,6 @@ run_names() {
 # ---------------------------------------------------------------------------
 # Content checks (opt-in)
 # ---------------------------------------------------------------------------
-
-run_rsync() {
-  local args=(-rn --itemize-changes --out-format='%i %n') x
-  case $mode in
-    checksum) args+=(--checksum) ;;
-    size)     args+=(--size-only) ;;
-  esac
-  (( one_way )) || args+=(--delete)
-  # ${arr[@]+...} guards against "unbound variable" on empty arrays in bash < 4.4.
-  for x in ${excludes[@]+"${excludes[@]}"}; do args+=(--exclude="$x"); done
-
-  (( verbose )) && log "+ rsync ${args[*]} ${src%/}/ ${dst%/}/"
-
-  local out rc=0
-  out=$(rsync "${args[@]}" "${src%/}/" "${dst%/}/" 2>&1) || rc=$?
-  if (( rc != 0 && rc != 23 && rc != 24 )); then
-    printf '%s\n' "$out" >&2
-    die "rsync failed (exit $rc)"
-  fi
-
-  # Itemize codes: ">f+++..." new file, ">f..." changed file, "*deleting" extra in dest.
-  local line code name
-  while IFS= read -r line; do
-    [[ -z $line ]] && continue
-    case $line in
-      '*deleting '*|'deleting '*)
-        name=${line#*deleting }; name=${name#"${name%%[![:space:]]*}"}
-        [[ $name == */ ]] || printf -- '- %s\n' "$name"
-        continue ;;
-      rsync:*|'rsync error'*)
-        printf '! %s\n' "$line"
-        continue ;;
-    esac
-    code=${line%% *}; name=${line#* }
-    case $code in
-      '>f+'*) printf '+ %s\n' "$name" ;;
-      '>f'*)  printf '* %s\n' "$name" ;;
-    esac
-  done <<<"$out" >"$results"
-
-  # rsync does not list identical files; derive them from a full listing.
-  list_files "$src" >"$work/src.lst"
-  cut -c3- "$results" | sort -u >"$work/changed.lst"
-  names_diff "$work/src.lst" "$work/changed.lst" '=' >>"$results"
-}
 
 common_hashes() {
   # Prints the shared hash types, empty if none, or "unknown" if they can't be determined.
@@ -451,9 +337,9 @@ run_rclone() {
 
 what="names"; [[ $mode != names ]] && what="names + $mode"
 (( ignore_case )) && what="$what, ignoring case"
-log "Comparing $what ($engine): $src  ->  $dst"
+log "Comparing $what: $src  ->  $dst"
 
-if [[ $mode == names ]]; then run_names; else "run_$engine"; fi
+if [[ $mode == names ]]; then run_names; else run_rclone; fi
 
 sort -k2 "$results" >"$results.sorted"
 if (( one_way )); then
