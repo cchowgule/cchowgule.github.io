@@ -1,0 +1,3 @@
+name = "pickleball-rotation"
+pages_build_output_dir = "pickleball"
+compatibility_date = "2026-11-01"
