@@ -132,6 +132,7 @@ thead th { color: var(--muted); font-weight: 600; font-size: .8rem; }
     <div class="controls">
       <button class="btn primary" id="next" type="button">Game finished</button>
       <button class="btn" id="reset" type="button">Back to game 1</button>
+      <button class="btn" id="share" type="button">Copy link</button>
       <span class="round" id="round"></span>
     </div>
     <ol class="games" id="games"></ol>
@@ -147,6 +148,7 @@ thead th { color: var(--muted); font-weight: 600; font-size: .8rem; }
   <ul class="notes">
     <li>Finished the list early? Keep going from Game 1. Play time stays exactly even only at the end of a full list.</li>
     <li>Tap any game to make it the current one.</li>
+    <li>The page address holds the players, settings and current game. Share it and everyone sees the same list.</li>
   </ul>
 </div>
 
@@ -160,7 +162,10 @@ function suggestedRounds(n, courts) {
   const need = Math.ceil(pairs / (2 * courts)); // rounds to cover every partnership once
   return Math.max(cycle, Math.ceil(need / cycle) * cycle);
 }
-function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+// seeded RNG: the same link always produces the same games
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+let rand = Math.random;
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
 function buildOnce(n, courts, rounds, pin) {
   const P = Array.from({ length: n }, () => Array(n).fill(0));
@@ -229,14 +234,14 @@ function evaluate(sched, n) {
 function improve(best, n, pin, iters) {
   // random swaps of two slots within one game; keep a swap only if the schedule scores better
   for (let t = 0; t < iters; t++) {
-    const ri = Math.floor(Math.random() * best.sched.length);
+    const ri = Math.floor(rand() * best.sched.length);
     const r = best.sched[ri];
     const slots = [];
     r.courts.forEach((g, k) => g.forEach((_, p) => { if (!(pin && ri === 0 && k === 0)) slots.push([k, p]); }));
     r.sit.forEach((_, p) => slots.push([-1, p]));
     if (slots.length < 2) continue;
-    const a = slots[Math.floor(Math.random() * slots.length)];
-    const b = slots[Math.floor(Math.random() * slots.length)];
+    const a = slots[Math.floor(rand() * slots.length)];
+    const b = slots[Math.floor(rand() * slots.length)];
     if (a === b) continue;
     const copy = best.sched.slice();
     const nr = { courts: r.courts.map(g => g.slice()), sit: r.sit.slice() };
@@ -254,7 +259,7 @@ function improve(best, n, pin, iters) {
         if (!locked && g.courts.some(c => c.includes(sitter))) others.push(j);
       });
       if (!others.length) continue;
-      const rj = others[Math.floor(Math.random() * others.length)];
+      const rj = others[Math.floor(rand() * others.length)];
       const g = best.sched[rj];
       copy[rj] = {
         courts: g.courts.map(c => c.map(x => x === sitter ? player : x)),
@@ -266,7 +271,8 @@ function improve(best, n, pin, iters) {
   }
   return best;
 }
-function generate(n, courts, rounds, pin) {
+function generate(n, courts, rounds, pin, seed) {
+  rand = mulberry32(seed);
   let best = null;
   const restarts = Math.max(20, Math.min(150, Math.floor(2000 / rounds)));
   for (let t = 0; t < restarts; t++) {
@@ -277,11 +283,59 @@ function generate(n, courts, rounds, pin) {
 }
 
 // ---------- state ----------
+// URL holds the generated list's inputs (players, courts, games, pin, seed) and the current game.
+// localStorage keeps the same for visits without those parameters.
 const DEFAULT = { players: ["Andre", "Killian", "Dean", "Vivian", "Chaits"], courts: 1, rounds: 5, pin: true };
-let state;
-try { state = JSON.parse(localStorage.getItem("pb-state-v2") || "null"); } catch (e) { state = null; }
-if (!state || !Array.isArray(state.players)) state = { ...DEFAULT, result: null, schedNames: null, current: 0 };
-function save() { try { localStorage.setItem("pb-state-v2", JSON.stringify(state)); } catch (e) {} }
+const clampInt = (v, lo, hi, d) => { const x = parseInt(v, 10); return Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : d; };
+const newSeed = () => (Math.random() * 4294967296) >>> 0;
+function dedupe(list) {
+  const seen = new Set();
+  return list.map(x => x.trim()).filter(x => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+}
+function fromUrl() {
+  const q = new URLSearchParams(location.search);
+  const players = dedupe(q.getAll("p"));
+  if (!players.length) return null;
+  const seed = parseInt(q.get("s"), 10);
+  const gen = {
+    players, courts: clampInt(q.get("c"), 1, 6, 1), rounds: clampInt(q.get("r"), 1, 60, 5),
+    pin: q.get("pin") !== "0", seed: Number.isFinite(seed) ? seed >>> 0 : newSeed()
+  };
+  return { players: players.slice(), courts: gen.courts, rounds: gen.rounds, pin: gen.pin, gen, current: clampInt(q.get("g"), 0, 1e6, 0) };
+}
+function fromStorage() {
+  try {
+    const st = JSON.parse(localStorage.getItem("pb-state-v3") || "null");
+    if (st && Array.isArray(st.players)) return st;
+  } catch (e) {}
+  return null;
+}
+let state = fromUrl() || fromStorage() || { ...DEFAULT, gen: null, current: 0 };
+state.result = null; state.schedNames = null;
+
+function save() {
+  const { result, schedNames, ...keep } = state;
+  try { localStorage.setItem("pb-state-v3", JSON.stringify(keep)); } catch (e) {}
+  writeUrl();
+}
+function writeUrl() {
+  if (!state.gen) return;
+  const g = state.gen, q = new URLSearchParams();
+  g.players.forEach(p => q.append("p", p));
+  q.set("c", g.courts); q.set("r", g.rounds); q.set("pin", g.pin ? 1 : 0); q.set("s", g.seed); q.set("g", state.current);
+  try { history.replaceState(null, "", location.pathname + "?" + q.toString() + location.hash); } catch (e) {}
+}
+function runGen() {
+  const g = state.gen;
+  if (!g || g.players.length < 4 * g.courts) { state.gen = null; return false; }
+  const res = generate(g.players.length, g.courts, g.rounds, g.pin, g.seed);
+  state.schedNames = g.players.slice();
+  state.result = {
+    sched: res.sched.map(r => ({ courts: r.courts.map(c => c.map(i => g.players[i])), sit: r.sit.map(i => g.players[i]) })),
+    P: res.P, O: res.O, played: res.played
+  };
+  return true;
+}
 
 const $ = id => document.getElementById(id);
 const roster = $("roster"), msg = $("msg");
@@ -292,8 +346,8 @@ function renderRoster() {
   state.players.forEach((p, i) => {
     const li = document.createElement("li");
     li.innerHTML = `<span class="pos">${i + 1}</span><span class="name"></span>
-      <button class="icon" type="button" aria-label="Move ${p} up" ${i === 0 ? "disabled" : ""}>&uarr;</button>
-      <button class="icon remove" type="button" aria-label="Remove ${p}">Remove</button>`;
+      <button class="icon" type="button" aria-label="Move ${esc(p)} up" ${i === 0 ? "disabled" : ""}>&uarr;</button>
+      <button class="icon remove" type="button" aria-label="Remove ${esc(p)}">Remove</button>`;
     li.querySelector(".name").textContent = p;
     const [up, rm] = li.querySelectorAll("button");
     up.addEventListener("click", () => { const a = state.players; [a[i - 1], a[i]] = [a[i], a[i - 1]]; changed(); });
@@ -302,8 +356,8 @@ function renderRoster() {
   });
 }
 function readOpts() {
-  state.courts = Math.max(1, Math.min(6, parseInt($("courts").value, 10) || 1));
-  state.rounds = Math.max(1, Math.min(60, parseInt($("rounds").value, 10) || 1));
+  state.courts = clampInt($("courts").value, 1, 6, 1);
+  state.rounds = clampInt($("rounds").value, 1, 60, 1);
   state.pin = $("pin").checked;
 }
 function validate() {
@@ -314,7 +368,7 @@ function validate() {
 function changed() {
   readOpts(); renderRoster();
   const err = validate();
-  msg.textContent = err || (state.schedNames ? "Setup changed. Generate games to update the list." : "");
+  msg.textContent = err || (state.gen ? "Setup changed. Generate games to update the list and link." : "");
   save();
 }
 
@@ -335,21 +389,29 @@ $("generate").addEventListener("click", () => {
   readOpts();
   const err = validate();
   if (err) { msg.textContent = err; return; }
-  const n = state.players.length;
-  const res = generate(n, state.courts, state.rounds, state.pin);
-  const names = state.players.slice();
-  state.schedNames = names;
-  state.result = {
-    sched: res.sched.map(r => ({ courts: r.courts.map(g => g.map(i => names[i])), sit: r.sit.map(i => names[i]) })),
-    P: res.P, O: res.O, played: res.played
-  };
+  state.gen = { players: state.players.slice(), courts: state.courts, rounds: state.rounds, pin: state.pin, seed: newSeed() };
+  runGen();
   state.current = 0; msg.textContent = ""; save(); renderGames();
+});
+$("share").addEventListener("click", async () => {
+  writeUrl();
+  const url = location.href;
+  try {
+    if (navigator.share && matchMedia("(pointer: coarse)").matches) { await navigator.share({ title: document.title, url }); return; }
+    await navigator.clipboard.writeText(url);
+    $("share").textContent = "Link copied";
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    window.prompt("Copy this link:", url);
+  }
+  setTimeout(() => { $("share").textContent = "Copy link"; }, 2000);
 });
 
 // ---------- games ----------
 function renderGames() {
   const list = $("games"); list.innerHTML = "";
   const res = state.result;
+  $("share").disabled = !res;
   if (!res) { $("round").textContent = "Generate games to see the list."; $("balance").hidden = true; return; }
   const len = res.sched.length;
   const cur = state.current % len, lap = Math.floor(state.current / len) + 1;
@@ -393,7 +455,9 @@ $("next").addEventListener("click", () => { if (!state.result) return; state.cur
 $("reset").addEventListener("click", () => { state.current = 0; save(); renderGames(); });
 
 renderRoster();
-if (!state.result) $("generate").click(); else renderGames();
+if (state.gen && runGen()) { save(); renderGames(); }
+else if (validate()) { msg.textContent = validate(); renderGames(); }
+else $("generate").click();
 </script>
 
 </body></html>
