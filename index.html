@@ -1,21 +1,399 @@
-<!doctype html>
-<html>
-  <head>
-    <link rel="stylesheet" href="gsap-styles.css" />
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <div class="text-box box" id="praying-mantis">This is a praying mantis</div>
-    <div class="text-box box" id="white-flowers">
-      These are pretty white flowers
+<!doctype html><html><head><meta charset="utf-8"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><title>Pickleball Rotation</title></head><body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: single court-side column — setup form, then game cards, then balance check */
+:root {
+  --bg: #f3f6f4;
+  --surface: #ffffff;
+  --fg: #16231d;
+  --muted: #5d6e66;
+  --line: #d6e0db;
+  --court: #1f6f8b;
+  --court-soft: #e2eff4;
+  --ball: #c9d936;
+  --warn: #a35a12;
+  --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --body: "Barlow", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1714; --surface: #17221e; --fg: #e6eeea; --muted: #93a59c;
+    --line: #2a3a33; --court: #5bb3d1; --court-soft: #16313b; --ball: #d4e24a; --warn: #e0a15c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1714; --surface: #17221e; --fg: #e6eeea; --muted: #93a59c;
+  --line: #2a3a33; --court: #5bb3d1; --court-soft: #16313b; --ball: #d4e24a; --warn: #e0a15c;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 40px;
+}
+.wrap { max-width: 600px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+h1 { font-family: var(--display); font-weight: 700; font-size: 2.2rem; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-size: 1.2rem; margin: 0; text-transform: uppercase; letter-spacing: .06em; }
+.sub { color: var(--muted); margin: 4px 0 0; line-height: 1.45; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.addrow { display: flex; gap: 8px; }
+.addrow input { flex: 1; min-width: 0; }
+input[type="text"], input[type="number"] {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+}
+input:focus-visible { outline: 3px solid var(--court); outline-offset: 1px; }
+.roster { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.roster li { display: grid; grid-template-columns: 26px 1fr auto auto; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; background: var(--bg); }
+.roster .pos { font-family: var(--display); color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; }
+.roster .name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.icon { font: inherit; background: none; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 4px 9px; cursor: pointer; font-size: .85rem; }
+.icon:disabled { opacity: .35; cursor: default; }
+.icon.remove { color: var(--warn); }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.opts label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--muted); font-weight: 500; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: .9rem; color: var(--muted); line-height: 1.4; }
+.check input { margin-top: 3px; }
+.msg { font-size: .9rem; color: var(--warn); min-height: 1em; margin: 0; }
+.msg:empty { display: none; }
+
+.games { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.game {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px 16px; display: grid; grid-template-columns: 44px 1fr; gap: 12px; align-items: center;
+  cursor: pointer; font: inherit; color: inherit; text-align: left; width: 100%;
+}
+.game.done { opacity: .5; }
+.game.current { border-color: var(--court); background: var(--court-soft); box-shadow: 0 0 0 1px var(--court); }
+.num { font-family: var(--display); font-size: 1.9rem; font-weight: 700; color: var(--court); text-align: center; font-variant-numeric: tabular-nums; }
+.match { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.teams { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-weight: 600; font-size: 1.05rem; }
+.courtlbl { font-size: .72rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--court); width: 100%; }
+.vs { font-family: var(--display); color: var(--muted); font-size: .9rem; text-transform: uppercase; letter-spacing: .08em; }
+.sit { font-size: .85rem; color: var(--muted); }
+.sit b { color: var(--fg); font-weight: 600; }
+.tag { display: inline-block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+  background: var(--ball); color: #1d2208; padding: 2px 7px; border-radius: 4px; margin-left: 6px; vertical-align: 2px; }
+
+.controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+button.btn { font: inherit; font-weight: 600; border-radius: 8px; padding: 10px 16px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+button.btn.primary { background: var(--court); border-color: var(--court); color: var(--bg); }
+button:focus-visible { outline: 3px solid var(--court); outline-offset: 2px; }
+.round { color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+
+details { border-top: 1px solid var(--line); padding-top: 14px; }
+summary { cursor: pointer; font-family: var(--display); font-size: 1.2rem; text-transform: uppercase; letter-spacing: .06em; }
+.tablewrap { overflow-x: auto; margin-top: 12px; }
+table { border-collapse: collapse; font-size: .9rem; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: center; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; font-weight: 600; }
+thead th { color: var(--muted); font-weight: 600; font-size: .8rem; }
+.legend { color: var(--muted); font-size: .85rem; margin: 8px 0 0; line-height: 1.45; }
+.notes { color: var(--muted); line-height: 1.5; font-size: .95rem; margin: 0; padding-left: 18px; }
+@media (max-width: 420px) { .opts { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: no-preference) { .game { transition: background .15s, border-color .15s, opacity .15s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Pickleball Rotation</h1>
+    <p class="sub">Doubles, games to 11. Balances games played, sit-outs, partners and opponents.</p>
+  </header>
+
+  <form class="panel" id="setup" autocomplete="off">
+    <h2>Players</h2>
+    <div class="addrow">
+      <input type="text" id="newname" placeholder="Add a player" aria-label="Player name">
+      <button class="btn" type="submit">Add</button>
     </div>
-    <div class="text-box box" id="crab">Here's a crab</div>
-    <div class="text-box box" id="frog">And a frog</div>
-    <video playinline autoplay muted loop id="bg-video">
-      <source src="public/bg.mp4" type="video/mp4" />
-    </video>
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js"></script>
-    <script src="gsap.js"></script>
-  </body>
-</html>
+    <ul class="roster" id="roster"></ul>
+    <div class="opts">
+      <label for="courts">Courts
+        <input type="number" id="courts" min="1" max="6" value="1">
+      </label>
+      <label for="rounds">Games per court
+        <input type="number" id="rounds" min="1" max="60" value="5">
+      </label>
+    </div>
+    <label class="check" for="pin">
+      <input type="checkbox" id="pin" checked>
+      <span>First game is players 1 + 2 vs 3 + 4 (reorder with the arrows)</span>
+    </label>
+    <p class="msg" id="msg"></p>
+    <div class="controls">
+      <button class="btn primary" type="button" id="generate">Generate games</button>
+      <button class="btn" type="button" id="suggest">Use suggested game count</button>
+    </div>
+  </form>
+
+  <section style="display:flex;flex-direction:column;gap:12px">
+    <div class="controls">
+      <button class="btn primary" id="next" type="button">Game finished</button>
+      <button class="btn" id="reset" type="button">Back to game 1</button>
+      <span class="round" id="round"></span>
+    </div>
+    <ol class="games" id="games"></ol>
+  </section>
+
+  <details id="balance">
+    <summary>Balance check</summary>
+    <div class="tablewrap"><table id="stats"></table></div>
+    <div class="tablewrap"><table id="matrix"></table></div>
+    <p class="legend">Grid shows partner / opponent counts for each pair across one full list.</p>
+  </details>
+
+  <ul class="notes">
+    <li>Finished the list early? Keep going from Game 1. Play time stays exactly even only at the end of a full list.</li>
+    <li>Tap any game to make it the current one.</li>
+  </ul>
+</div>
+
+<script>
+// ---------- scheduler ----------
+function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+function suggestedRounds(n, courts) {
+  const slots = 4 * courts;
+  const cycle = n / gcd(n, slots);              // rounds for equal play
+  const pairs = n * (n - 1) / 2;
+  const need = Math.ceil(pairs / (2 * courts)); // rounds to cover every partnership once
+  return Math.max(cycle, Math.ceil(need / cycle) * cycle);
+}
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+function buildOnce(n, courts, rounds, pin) {
+  const P = Array.from({ length: n }, () => Array(n).fill(0));
+  const O = Array.from({ length: n }, () => Array(n).fill(0));
+  const played = Array(n).fill(0), satLast = Array(n).fill(false);
+  const sched = [];
+  let penalty = 0;
+  const pairCost = (a, b, c, d) =>
+    3 * (P[a][b] + P[c][d]) + O[a][c] + O[a][d] + O[b][c] + O[b][d];
+  for (let r = 0; r < rounds; r++) {
+    let fixed = [];
+    if (r === 0 && pin) fixed = [0, 1, 2, 3];
+    // arrange players into courts/teams; who sits is re-drawn among tied players each try
+    let bestArr = null, bestC = Infinity, sitting = [];
+    const tries = 120;
+    for (let t = 0; t < tries; t++) {
+      const rest = shuffle([...Array(n).keys()].filter(i => !fixed.includes(i)))
+        .sort((x, y) => (played[x] - played[y]) || (satLast[y] - satLast[x]));
+      const playingT = fixed.concat(rest.slice(0, 4 * courts - fixed.length));
+      const sitT = rest.slice(4 * courts - fixed.length);
+      const free = shuffle(playingT.slice(fixed.length));
+      const order = fixed.concat(free);
+      const arr = []; let c = 0;
+      for (let k = 0; k < courts; k++) {
+        const g = order.slice(4 * k, 4 * k + 4);
+        let opts = [[g[0], g[1], g[2], g[3]], [g[0], g[2], g[1], g[3]], [g[0], g[3], g[1], g[2]]];
+        if (k === 0 && fixed.length) opts = [opts[0]];
+        let bo = opts[0], bc = Infinity;
+        for (const o of opts) { const oc = pairCost(...o); if (oc < bc) { bc = oc; bo = o; } }
+        arr.push(bo); c += bc;
+      }
+      if (c < bestC) { bestC = c; bestArr = arr; sitting = sitT; }
+    }
+    for (const [a, b, c, d] of bestArr) {
+      P[a][b]++; P[b][a]++; P[c][d]++; P[d][c]++;
+      for (const x of [a, b]) for (const y of [c, d]) { O[x][y]++; O[y][x]++; }
+      for (const x of [a, b, c, d]) played[x]++;
+    }
+    for (const s of sitting) if (satLast[s]) penalty += 2;
+    for (let i = 0; i < n; i++) satLast[i] = sitting.includes(i);
+    sched.push({ courts: bestArr, sit: sitting });
+  }
+  let score = penalty;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) score += 3 * P[i][j] ** 2 + O[i][j] ** 2;
+  score += 100 * (Math.max(...played) - Math.min(...played));
+  return { sched, score, P, O, played };
+}
+function evaluate(sched, n) {
+  const P = Array.from({ length: n }, () => Array(n).fill(0));
+  const O = Array.from({ length: n }, () => Array(n).fill(0));
+  const played = Array(n).fill(0);
+  let score = 0, prevSit = [];
+  for (const r of sched) {
+    for (const [a, b, c, d] of r.courts) {
+      P[a][b]++; P[b][a]++; P[c][d]++; P[d][c]++;
+      for (const x of [a, b]) for (const y of [c, d]) { O[x][y]++; O[y][x]++; }
+      for (const x of [a, b, c, d]) played[x]++;
+    }
+    for (const s of r.sit) if (prevSit.includes(s)) score += 2;
+    prevSit = r.sit;
+  }
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) score += 3 * P[i][j] ** 2 + O[i][j] ** 2;
+  score += 100 * (Math.max(...played) - Math.min(...played));
+  return { sched, score, P, O, played };
+}
+function improve(best, n, pin, iters) {
+  // random swaps of two slots within one game; keep a swap only if the schedule scores better
+  for (let t = 0; t < iters; t++) {
+    const ri = Math.floor(Math.random() * best.sched.length);
+    const r = best.sched[ri];
+    const slots = [];
+    r.courts.forEach((g, k) => g.forEach((_, p) => { if (!(pin && ri === 0 && k === 0)) slots.push([k, p]); }));
+    r.sit.forEach((_, p) => slots.push([-1, p]));
+    if (slots.length < 2) continue;
+    const a = slots[Math.floor(Math.random() * slots.length)];
+    const b = slots[Math.floor(Math.random() * slots.length)];
+    if (a === b) continue;
+    const copy = best.sched.slice();
+    const nr = { courts: r.courts.map(g => g.slice()), sit: r.sit.slice() };
+    const get = s => s[0] < 0 ? nr.sit[s[1]] : nr.courts[s[0]][s[1]];
+    const set = (s, v) => { if (s[0] < 0) nr.sit[s[1]] = v; else nr.courts[s[0]][s[1]] = v; };
+    const va = get(a), vb = get(b); set(a, vb); set(b, va);
+    copy[ri] = nr;
+    // a player/sitter swap shifts play time; undo it by reversing the same two players in another game
+    if ((a[0] < 0) !== (b[0] < 0)) {
+      const sitter = a[0] < 0 ? va : vb, player = a[0] < 0 ? vb : va; // before swap: sitter sat, player played
+      const others = [];
+      best.sched.forEach((g, j) => {
+        if (j === ri || !g.sit.includes(player)) return;
+        const locked = pin && j === 0 && g.courts[0].includes(sitter);
+        if (!locked && g.courts.some(c => c.includes(sitter))) others.push(j);
+      });
+      if (!others.length) continue;
+      const rj = others[Math.floor(Math.random() * others.length)];
+      const g = best.sched[rj];
+      copy[rj] = {
+        courts: g.courts.map(c => c.map(x => x === sitter ? player : x)),
+        sit: g.sit.map(x => x === player ? sitter : x)
+      };
+    }
+    const cand = evaluate(copy, n);
+    if (cand.score <= best.score) best = cand;
+  }
+  return best;
+}
+function generate(n, courts, rounds, pin) {
+  let best = null;
+  const restarts = Math.max(20, Math.min(150, Math.floor(2000 / rounds)));
+  for (let t = 0; t < restarts; t++) {
+    const s = buildOnce(n, courts, rounds, pin);
+    if (!best || s.score < best.score) best = s;
+  }
+  return improve(evaluate(best.sched, n), n, pin, 20000);
+}
+
+// ---------- state ----------
+const DEFAULT = { players: ["Andre", "Killian", "Dean", "Vivian", "Chaits"], courts: 1, rounds: 5, pin: true };
+let state;
+try { state = JSON.parse(localStorage.getItem("pb-state-v2") || "null"); } catch (e) { state = null; }
+if (!state || !Array.isArray(state.players)) state = { ...DEFAULT, result: null, schedNames: null, current: 0 };
+function save() { try { localStorage.setItem("pb-state-v2", JSON.stringify(state)); } catch (e) {} }
+
+const $ = id => document.getElementById(id);
+const roster = $("roster"), msg = $("msg");
+$("courts").value = state.courts; $("rounds").value = state.rounds; $("pin").checked = state.pin;
+
+function renderRoster() {
+  roster.innerHTML = "";
+  state.players.forEach((p, i) => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="pos">${i + 1}</span><span class="name"></span>
+      <button class="icon" type="button" aria-label="Move ${p} up" ${i === 0 ? "disabled" : ""}>&uarr;</button>
+      <button class="icon remove" type="button" aria-label="Remove ${p}">Remove</button>`;
+    li.querySelector(".name").textContent = p;
+    const [up, rm] = li.querySelectorAll("button");
+    up.addEventListener("click", () => { const a = state.players; [a[i - 1], a[i]] = [a[i], a[i - 1]]; changed(); });
+    rm.addEventListener("click", () => { state.players.splice(i, 1); changed(); });
+    roster.appendChild(li);
+  });
+}
+function readOpts() {
+  state.courts = Math.max(1, Math.min(6, parseInt($("courts").value, 10) || 1));
+  state.rounds = Math.max(1, Math.min(60, parseInt($("rounds").value, 10) || 1));
+  state.pin = $("pin").checked;
+}
+function validate() {
+  const need = 4 * state.courts;
+  if (state.players.length < need) return `Need at least ${need} players for ${state.courts} court${state.courts > 1 ? "s" : ""}.`;
+  return "";
+}
+function changed() {
+  readOpts(); renderRoster();
+  const err = validate();
+  msg.textContent = err || (state.schedNames ? "Setup changed. Generate games to update the list." : "");
+  save();
+}
+
+$("setup").addEventListener("submit", e => {
+  e.preventDefault();
+  const v = $("newname").value.trim();
+  if (!v) return;
+  if (state.players.some(p => p.toLowerCase() === v.toLowerCase())) { msg.textContent = `${v} is already on the list.`; return; }
+  state.players.push(v); $("newname").value = ""; changed(); $("newname").focus();
+});
+["courts", "rounds", "pin"].forEach(id => $(id).addEventListener("change", changed));
+$("suggest").addEventListener("click", () => {
+  readOpts();
+  $("rounds").value = suggestedRounds(state.players.length, state.courts);
+  changed();
+});
+$("generate").addEventListener("click", () => {
+  readOpts();
+  const err = validate();
+  if (err) { msg.textContent = err; return; }
+  const n = state.players.length;
+  const res = generate(n, state.courts, state.rounds, state.pin);
+  const names = state.players.slice();
+  state.schedNames = names;
+  state.result = {
+    sched: res.sched.map(r => ({ courts: r.courts.map(g => g.map(i => names[i])), sit: r.sit.map(i => names[i]) })),
+    P: res.P, O: res.O, played: res.played
+  };
+  state.current = 0; msg.textContent = ""; save(); renderGames();
+});
+
+// ---------- games ----------
+function renderGames() {
+  const list = $("games"); list.innerHTML = "";
+  const res = state.result;
+  if (!res) { $("round").textContent = "Generate games to see the list."; $("balance").hidden = true; return; }
+  const len = res.sched.length;
+  const cur = state.current % len, lap = Math.floor(state.current / len) + 1;
+  $("round").textContent = `Pass ${lap} · ${state.current} game${state.current === 1 ? "" : "s"} played`;
+  res.sched.forEach((g, i) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.id = "game-" + (i + 1);
+    btn.className = "game" + (i === cur ? " current" : i < cur ? " done" : "");
+    const multi = g.courts.length > 1;
+    const courtsHtml = g.courts.map((c, k) => `
+      <span class="teams">${multi ? `<span class="courtlbl">Court ${k + 1}</span>` : ""}
+        <span>${esc(c[0])} + ${esc(c[1])}</span><span class="vs">vs</span><span>${esc(c[2])} + ${esc(c[3])}</span>
+      </span>`).join("");
+    const sitHtml = g.sit.length ? `Sits out: <b>${g.sit.map(esc).join(", ")}</b>` : "Everyone plays";
+    btn.innerHTML = `<span class="num">${i + 1}</span><span class="match">${courtsHtml}
+      <span class="sit">${sitHtml}${i === cur ? '<span class="tag">On court</span>' : ""}</span></span>`;
+    btn.addEventListener("click", () => { state.current = (lap - 1) * len + i; save(); renderGames(); });
+    li.appendChild(btn); list.appendChild(li);
+  });
+  renderBalance();
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function renderBalance() {
+  const { P, O, played, sched } = state.result, names = state.schedNames, n = names.length;
+  $("balance").hidden = false;
+  let s = "<thead><tr><th>Player</th><th>Played</th><th>Sat out</th><th>Partners</th></tr></thead><tbody>";
+  names.forEach((p, i) => {
+    const partners = P[i].filter((v, j) => j !== i && v > 0).length;
+    s += `<tr><td>${esc(p)}</td><td>${played[i]}</td><td>${sched.length - played[i]}</td><td>${partners} / ${n - 1}</td></tr>`;
+  });
+  $("stats").innerHTML = s + "</tbody>";
+  let m = "<thead><tr><th></th>" + names.map(p => `<th>${esc(p)}</th>`).join("") + "</tr></thead><tbody>";
+  names.forEach((p, i) => {
+    m += `<tr><td>${esc(p)}</td>` + names.map((_, j) => i === j ? "<td>&ndash;</td>" : `<td>${P[i][j]} / ${O[i][j]}</td>`).join("") + "</tr>";
+  });
+  $("matrix").innerHTML = m + "</tbody>";
+}
+
+$("next").addEventListener("click", () => { if (!state.result) return; state.current++; save(); renderGames(); });
+$("reset").addEventListener("click", () => { state.current = 0; save(); renderGames(); });
+
+renderRoster();
+if (!state.result) $("generate").click(); else renderGames();
+</script>
+
+</body></html>
